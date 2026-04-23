@@ -1,0 +1,36 @@
+services:
+  memcached:
+    image: registry.astralinux.ru/library/astra/ubi18-memcached16:latest
+    container_name: memcached
+    restart: unless-stopped
+    command: memcached -m 512 -p 11211 -u root
+
+  postgres:
+    image: registry.astralinux.ru/library/astra/ubi18-postgresql15:latest
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  app:
+    build: .
+    container_name: memcached_app
+    depends_on:
+      - memcached
+      - postgres
+    environment:
+      MEMCACHED_HOST: memcached
+      POSTGRES_HOST: postgres
+    volumes:
+      - ./results:/app/results   
+    command: ["/bin/bash"]
+    stdin_open: true
+    tty: true
+
+volumes:
+  pg_data:

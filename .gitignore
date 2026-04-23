@@ -1,0 +1,6 @@
+*.log
+results/
+build/
+dump.txt
+*.csv
+test.o
