@@ -9,8 +9,8 @@ if [[ "$1" == "--without-pg" ]]; then
 fi
 
 PERIODS=(100 80 60 40 20)
-TAGS_LIST=(100)
-DURATION=10
+TAGS_LIST=(100 1000 2000 5000 10000)
+DURATION=30
 THRESHOLD=10
 
 opt_results="optimization_results_memcached.csv"
@@ -18,14 +18,14 @@ all_results="results_memcached.csv"
 
 if [ $WITHOUT_PG -eq 0 ]; then
     echo "period_ms,max_tags,memory_bytes" > "$opt_results"
-    echo "period,tags,duration_sec,total_packets,total_records,total_time_ms,time_min,time_max,time_avg,time_stddev,insert_min,insert_max,insert_avg,insert_stddev,memory_bytes,exceed_count,unload_time_ms" > "$all_results"
+    echo "period,tags,duration_sec,total_packets,total_records,total_time_ms,time_min,time_max,time_avg,time_stddev,insert_min,insert_max,insert_avg,insert_stddev,memory_bytes,exceed_count,unload_time_ms,p5,p10,p25,p50,p75,p90,p95" > "$all_results"
 else
     echo "period_ms,max_tags,memory_bytes" > "$opt_results"
-    echo "period,tags,duration_sec,total_packets,total_records,total_time_ms,time_min,time_max,time_avg,time_stddev,insert_min,insert_max,insert_avg,insert_stddev,memory_bytes,exceed_count" > "$all_results"
+    echo "period,tags,duration_sec,total_packets,total_records,total_time_ms,time_min,time_max,time_avg,time_stddev,insert_min,insert_max,insert_avg,insert_stddev,memory_bytes,exceed_count,p5,p10,p25,p50,p75,p90,p95" > "$all_results"
 fi
 
 get_memcached_memory() {
-    memcstat --servers=memcached 2>/dev/null | grep -E '^\s*bytes:' | awk '{print $2}' || echo "0"
+    memcstat --servers=memcached 2>/dev/null | grep -E '^\s*bytes:' | awk '{print $2}' | tr -d ' \r\n' || echo "0"
 }
 
 flush_memcached() {
@@ -35,6 +35,27 @@ flush_memcached() {
 
 flush_postgres() {
     PGPASSWORD=postgres psql -h postgres -U postgres -d test -c "TRUNCATE TABLE guts;" > /dev/null 2>&1
+}
+
+calculate_percentiles() {
+    local logfile="$1"
+    grep -oP 'Пакетная вставка за\s+\K\d+' "$logfile" | sort -n | awk '
+    {
+        arr[NR] = $1
+    }
+    function get_p(p,    idx) {
+        idx = int(NR * p / 100) + 1
+        if (idx > NR) idx = NR
+        if (idx < 1) idx = 1
+        return arr[idx]
+    }
+    END {
+        if (NR == 0) {
+            print "0 0 0 0 0 0 0"
+            exit
+        }
+        printf "%d %d %d %d %d %d %d", get_p(5), get_p(10), get_p(25), get_p(50), get_p(75), get_p(90), get_p(95)
+    }'
 }
 
 for period in "${PERIODS[@]}"; do
@@ -80,6 +101,9 @@ for period in "${PERIODS[@]}"; do
         insert_avg=$(grep -oP 'INSERT_TIME_AVG=\K[\d.]+' MemcachedWriter.log 2>/dev/null | head -1 | tr -d '\n\r')
         insert_stddev=$(grep -oP 'INSERT_TIME_STDDEV=\K[\d.]+' MemcachedWriter.log 2>/dev/null | head -1 | tr -d '\n\r')
 
+        read p5 p10 p25 p50 p75 p90 p95 <<< $(calculate_percentiles MemcachedWriter.log)
+        echo "    Процентили: P5=$p5 P10=$p10 P25=$p25 P50=$p50 P75=$p75 P90=$p90 P95=$p95"
+
         unload_time_ms=""
         if [ $WITHOUT_PG -eq 0 ] && [ -n "$total_packets" ] && [ "$total_packets" -gt 0 ]; then
             unload_output=$(/usr/local/bin/memcached_to_pg "$total_packets" 2>&1)
@@ -90,9 +114,9 @@ for period in "${PERIODS[@]}"; do
         fi
 
         if [ $WITHOUT_PG -eq 0 ]; then
-            echo "$period,$tags,$DURATION,$total_packets,$total_records,$total_time_ms,$time_min,$time_max,$time_avg,$time_stddev,$insert_min,$insert_max,$insert_avg,$insert_stddev,$memory_bytes,$exceed_count,$unload_time_ms" >> "$all_results"
+            echo "$period,$tags,$DURATION,$total_packets,$total_records,$total_time_ms,$time_min,$time_max,$time_avg,$time_stddev,$insert_min,$insert_max,$insert_avg,$insert_stddev,$memory_bytes,$exceed_count,$unload_time_ms,$p5,$p10,$p25,$p50,$p75,$p90,$p95" >> "$all_results"
         else
-            echo "$period,$tags,$DURATION,$total_packets,$total_records,$total_time_ms,$time_min,$time_max,$time_avg,$time_stddev,$insert_min,$insert_max,$insert_avg,$insert_stddev,$memory_bytes,$exceed_count" >> "$all_results"
+            echo "$period,$tags,$DURATION,$total_packets,$total_records,$total_time_ms,$time_min,$time_max,$time_avg,$time_stddev,$insert_min,$insert_max,$insert_avg,$insert_stddev,$memory_bytes,$exceed_count,$p5,$p10,$p25,$p50,$p75,$p90,$p95" >> "$all_results"
         fi
 
         if [ "$exceed_count" -gt "$THRESHOLD" ]; then
