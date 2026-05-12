@@ -9,7 +9,7 @@ Memcached Benchmark + PostgreSQL
 Порядок запуска:
 ```bash
 git clone https://github.com/Icelikk/memc_tag
-cd memcached-benchmark
+cd memc_tag_writer
 docker-compose up -d
 docker exec -it memcached_app bash
 cd /app
