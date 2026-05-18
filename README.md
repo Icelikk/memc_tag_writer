@@ -8,61 +8,61 @@ Memcached Benchmark + PostgreSQL
 
 Порядок запуска:
 ```bash
-git clone https://github.com/Icelikk/memc_tag
-cd memc_tag_writer
-docker-compose up -d
-docker exec -it memcached_app bash
+# Клонирование репозитория
+git clone https://github.com/ваш-аккаунт/memcached-benchmark.git
+cd memcached-benchmark
+
+# Запуск в режиме разработки
+docker-compose up -d dev
+
+# Подключение к контейнеру
+docker exec -it dev-memcached bash
+
+# Внутри контейнера: сборка проекта
 cd /app
-./run_test.sh
+cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+
+# Запуск тестирования
+./scripts/run_test.sh
 ```
 Доступно также тестирование без выгрузки в Postgres, по флагу --without-pg
 ```bash
 ./run_test.sh --without-pg
 ```
 Результаты появятся на хосте в папке ./results/ (CSV-файлы)
-## ⚠️ Важно при использовании нескольких проектов
- 
-Если на этом же сервере запущен другой проект (например, `memc_tag_writer_`) — у него может быть свой контейнер `postgres` на порту `5432`. При попытке поднять этот проект получишь ошибку конфликта портов или имён контейнеров.
- 
-**Перед запуском остановите старый проект:**
- 
-```bash
-cd /путь/к/другому/проекту
-docker-compose down -v
-```
- 
-**Если нужно запустить оба проекта одновременно** — измените порт postgres в `docker-compose.yml` этого проекта:
- 
-```yaml
-postgres:
-  ports:
-    - "5433:5432"   # внешний порт 5433, внутренний остаётся 5432
-```
- 
-И имя контейнера, чтобы не было конфликта:
- 
-```yaml
-postgres:
-  container_name: postgres-redis   # вместо postgres
-```
- 
-> Внутри контейнеров всё общение идёт по внутренним именам сервисов (`postgres`, `redis-test`), так что менять строки подключения в коде не нужно — только `container_name` и проброс портов наружу.
- 
 ---
-## Структура проекта
+## 📁 Структура проекта
 
 ```
-.
-├── docker-compose.yml       
-├── Dockerfile               
-├── CMakeLists.txt           # Сборка memc_writer и pg_memc
-├── memc_writer.cpp          # Бенчмарк записи в Memcached
-├── pg_memc.cpp              # Выгрузка из Memcached в PostgreSQL
-├── run_test.sh              # Скрипт запуска тестов
-├── init.sql                 # Инициализация схемы PostgreSQL
-├── third_party/
-│   └── plog/                # Библиотека логирования
-└── results/                 # CSV с результатами (монтируется на хост)
+memc_tag_writer/
+├── README.md                               
+├── docker-compose.yml           
+│
+├── src/                        
+│   ├── memc_writer.cpp         
+│   └── pg_memc.cpp               
+│
+├── docker/                       
+│   ├── Dockerfile                
+│   └── Dockerfile.dev           
+│
+├── scripts/                      
+│   └── run_test.sh              
+│
+├── config/                       
+│   └── init.sql                 
+│
+├── build/                        
+│   ├── memcached_writer          
+│   ├── memcached_to_pg           
+│   └── MemcachedWriter.log     
+│
+├── results/                     
+│   ├── results_memcached.csv     
+│   ├── optimization_results_memcached.csv
+│   └── *.log                    
+
 ```
 
 ---
@@ -73,20 +73,41 @@ postgres:
 
 ---
 
-## Управление контейнерами
+### Основные команды
 
-**Перезапуск и пересборка:**
-(При изменении кода обязательно пересобирайте проект)
 ```bash
-docker-compose down -v
-docker-compose build --no-cache
+# Запуск всех сервисов
 docker-compose up -d
+
+# Остановка
+docker-compose down
+
+# Пересборка образов
+docker-compose build --no-cache
+
+# Просмотр логов
+docker-compose logs -f dev
+docker-compose logs -f memcached
+docker-compose logs -f postgres-memc
+
+# Подключение к контейнеру
+docker exec -it dev-memcached bash
+
+# Очистка volumes (удаляет все данные!)
+docker-compose down -v
 ```
 
-**Ручная выгрузка данных из Memcached в PostgreSQL:**
+### Очистка Memcached
 
 ```bash
-docker exec -it memcached_app /usr/local/bin/memcached_to_pg <число_пакетов>
+# Через memcached-tool
+docker exec -it dev-memcached memcached-tool memcached:11211 flush
+
+# Или через telnet
+docker exec -it dev-memcached bash
+telnet memcached 11211
+> flush_all
+> quit
 ```
 ---
 ## Параметры тестирования
