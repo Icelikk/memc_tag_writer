@@ -85,6 +85,7 @@ docker-compose down
 # Пересборка образов
 docker-compose build --no-cache
 
+
 # Просмотр логов
 docker-compose logs -f dev
 docker-compose logs -f memcached
@@ -95,6 +96,9 @@ docker exec -it dev-memcached bash
 
 # Очистка volumes (удаляет все данные!)
 docker-compose down -v
+
+#Очищает вообще все контейнеры полностью( Придётся заново собирать)
+docker system prune -a --volumes
 ```
 
 ### Очистка Memcached
