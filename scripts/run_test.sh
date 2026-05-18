@@ -1,0 +1,156 @@
+#!/bin/bash
+
+# Определяем пути
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+BUILD_DIR="$PROJECT_ROOT/build"
+RESULTS_DIR="/app/results"
+
+mkdir -p "$RESULTS_DIR"
+cd "$RESULTS_DIR"
+
+WITHOUT_PG=0
+if [[ "$1" == "--without-pg" ]]; then
+    WITHOUT_PG=1
+    shift
+fi
+
+PERIODS=(100 80 60 40 20)
+TAGS_LIST=(100 1000 2000 5000 10000)
+DURATION=30
+THRESHOLD=10
+
+opt_results="optimization_results_memcached.csv"
+all_results="results_memcached.csv"
+
+if [ $WITHOUT_PG -eq 0 ]; then
+    echo "period_ms,max_tags,memory_bytes" > "$opt_results"
+    echo "period,tags,duration_sec,total_packets,total_records,total_time_ms,time_min,time_max,time_avg,time_stddev,insert_min,insert_max,insert_avg,insert_stddev,memory_bytes,exceed_count,unload_time_ms,p5,p10,p25,p50,p75,p90,p95" > "$all_results"
+else
+    echo "period_ms,max_tags,memory_bytes" > "$opt_results"
+    echo "period,tags,duration_sec,total_packets,total_records,total_time_ms,time_min,time_max,time_avg,time_stddev,insert_min,insert_max,insert_avg,insert_stddev,memory_bytes,exceed_count,p5,p10,p25,p50,p75,p90,p95" > "$all_results"
+fi
+
+get_memcached_memory() {
+    memcstat --servers=memcached 2>/dev/null | grep -E '^\s*bytes:' | awk '{print $2}' | tr -d ' \r\n' || echo "0"
+}
+
+flush_memcached() {
+    memcached-tool memcached:11211 flush > /dev/null 2>&1
+    sleep 1
+}
+
+flush_postgres() {
+    PGPASSWORD=postgres psql -h postgres -U postgres -d test -c "TRUNCATE TABLE guts;" > /dev/null 2>&1
+}
+
+calculate_percentiles() {
+    local logfile="$1"
+    if [ ! -f "$logfile" ]; then
+        echo "0 0 0 0 0 0 0"
+        return
+    fi
+    
+    grep -oP 'Пакетная вставка за\s+\K\d+' "$logfile" 2>/dev/null | sort -n | awk '
+    {
+        arr[NR] = $1
+    }
+    function get_p(p,    idx) {
+        idx = int(NR * p / 100) + 1
+        if (idx > NR) idx = NR
+        if (idx < 1) idx = 1
+        return arr[idx]
+    }
+    END {
+        if (NR == 0) {
+            print "0 0 0 0 0 0 0"
+            exit
+        }
+        printf "%d %d %d %d %d %d %d", get_p(5), get_p(10), get_p(25), get_p(50), get_p(75), get_p(90), get_p(95)
+    }'
+}
+    
+for period in "${PERIODS[@]}"; do
+    echo "Тестирование периода $period мс"
+    max_success=0
+    success_found=false
+
+    for tags in "${TAGS_LIST[@]}"; do
+        echo "  Запуск с размером пакета $tags"
+
+        flush_memcached
+        flush_postgres
+
+        rm -f "$RESULTS_DIR/MemcachedWriter.log"
+
+        log_file="test_p${period}_t${tags}.log"
+
+        cd "$BUILD_DIR"
+        timeout $((DURATION + 10)) ./memcached_writer "$tags" "$period" "$DURATION" > "$RESULTS_DIR/$log_file" 2>&1
+        exit_code=$?
+        cd "$RESULTS_DIR"
+
+        if [ $exit_code -ne 0 ] && [ $exit_code -ne 124 ]; then
+            echo "    Ошибка выполнения (код $exit_code), возможно программа упала"
+            break
+        fi
+
+        exceed_count=$(grep -c "Превышение времени на" "$log_file" 2>/dev/null | tr -d '\n\r')
+        exceed_count=${exceed_count:-0}
+        echo "    Превышений: $exceed_count"
+
+        memory_bytes=$(get_memcached_memory)
+        echo "    Память Memcached: $memory_bytes байт"
+        echo "MEMCACHED_MEMORY=$memory_bytes" >> "$log_file"
+
+        total_packets=$(grep -oP 'TOTAL_PACKETS=\K\d+' "$log_file" 2>/dev/null | head -1 | tr -d '\n\r')
+        total_records=$(grep -oP 'TOTAL_RECORDS=\K\d+' "$log_file" 2>/dev/null | head -1 | tr -d '\n\r')
+        total_time_ms=$(grep -oP 'TOTAL_TIME_MS=\K\d+' "$log_file" 2>/dev/null | head -1 | tr -d '\n\r')
+        time_min=$(grep -oP 'TIME_MIN=\K\d+' "$log_file" 2>/dev/null | head -1 | tr -d '\n\r')
+        time_max=$(grep -oP 'TIME_MAX=\K\d+' "$log_file" 2>/dev/null | head -1 | tr -d '\n\r')
+        time_avg=$(grep -oP 'TIME_AVG=\K[\d.]+' "$log_file" 2>/dev/null | head -1 | tr -d '\n\r')
+        time_stddev=$(grep -oP 'TIME_STDDEV=\K[\d.]+' "$log_file" 2>/dev/null | head -1 | tr -d '\n\r')
+        insert_min=$(grep -oP 'INSERT_TIME_MIN=\K\d+' "$log_file" 2>/dev/null | head -1 | tr -d '\n\r')
+        insert_max=$(grep -oP 'INSERT_TIME_MAX=\K\d+' "$log_file" 2>/dev/null | head -1 | tr -d '\n\r')
+        insert_avg=$(grep -oP 'INSERT_TIME_AVG=\K[\d.]+' "$log_file" 2>/dev/null | head -1 | tr -d '\n\r')
+        insert_stddev=$(grep -oP 'INSERT_TIME_STDDEV=\K[\d.]+' "$log_file" 2>/dev/null | head -1 | tr -d '\n\r')
+
+        read p5 p10 p25 p50 p75 p90 p95 <<< $(calculate_percentiles "$log_file")
+        echo "    Процентили: P5=$p5 P10=$p10 P25=$p25 P50=$p50 P75=$p75 P90=$p90 P95=$p95"
+
+        unload_time_ms=""
+        if [ $WITHOUT_PG -eq 0 ] && [ -n "$total_packets" ] && [ "$total_packets" -gt 0 ]; then
+            cd "$BUILD_DIR"
+            unload_output=$(./memcached_to_pg "$total_packets" 2>&1)
+            cd "$RESULTS_DIR"
+            unload_time_ms=$(echo "$unload_output" | grep -oP '\d+(?= ms)' | head -1 | tr -d '\n\r')
+            [ -z "$unload_time_ms" ] && unload_time_ms="error"
+            echo "    Выгрузка в PostgreSQL: ${unload_time_ms} мс"
+            echo "UNLOAD_TIME_MS=$unload_time_ms" >> "$log_file"
+        fi
+
+        if [ $WITHOUT_PG -eq 0 ]; then
+            echo "$period,$tags,$DURATION,$total_packets,$total_records,$total_time_ms,$time_min,$time_max,$time_avg,$time_stddev,$insert_min,$insert_max,$insert_avg,$insert_stddev,$memory_bytes,$exceed_count,$unload_time_ms,$p5,$p10,$p25,$p50,$p75,$p90,$p95" >> "$all_results"
+        else
+            echo "$period,$tags,$DURATION,$total_packets,$total_records,$total_time_ms,$time_min,$time_max,$time_avg,$time_stddev,$insert_min,$insert_max,$insert_avg,$insert_stddev,$memory_bytes,$exceed_count,$p5,$p10,$p25,$p50,$p75,$p90,$p95" >> "$all_results"
+        fi
+
+        if [ "$exceed_count" -gt "$THRESHOLD" ]; then
+            echo "    Порог превышен, остановка для периода $period"
+            break
+        else
+            max_success=$tags
+            success_found=true
+        fi
+    done
+
+    if [ "$success_found" = true ]; then
+        echo "Для периода $period максимальный проходной размер: $max_success"
+        echo "$period,$max_success,$memory_bytes" >> "$opt_results"
+    else
+        echo "Для периода $period нет успешных тестов"
+        echo "$period,0,0" >> "$opt_results"
+    fi
+done
+
+echo "Готово. Результаты в $all_results и $opt_results"

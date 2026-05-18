@@ -1,36 +1,61 @@
 services:
   memcached:
     image: registry.astralinux.ru/library/astra/ubi18-memcached16:latest
-    container_name: memcached
+    container_name: memcached-test
     restart: unless-stopped
+    ports:
+      - "11211:11211"
     command: memcached -m 512 -p 11211 -u root
 
-  postgres:
+  postgres-memc:
     image: registry.astralinux.ru/library/astra/ubi18-postgresql15:latest
-    container_name: postgres
+    container_name: postgres-memc
     restart: unless-stopped
     environment:
       POSTGRES_DB: test
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"                   
     volumes:
-      - pg_data:/var/lib/postgresql/data
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+      - pg_memc_data:/var/lib/postgresql/data
+      - ./config/init.sql:/docker-entrypoint-initdb.d/init.sql
 
-  app:
-    build: .
-    container_name: memcached_app
+  dev:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dev
+    container_name: dev-memcached
     depends_on:
       - memcached
-      - postgres
+      - postgres-memc
     environment:
-      MEMCACHED_HOST: memcached
-      POSTGRES_HOST: postgres
+      - MEMCACHED_HOST=memcached
+      - MEMCACHED_PORT=11211
+      - POSTGRES_HOST=postgres-memc
+      - POSTGRES_PORT=5432
     volumes:
-      - ./results:/app/results   
-    command: ["/bin/bash"]
+      - .:/app
+      - ./build:/app/build
+    working_dir: /app
     stdin_open: true
     tty: true
+    command: /bin/bash
+
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: memcached-writer-app
+    depends_on:
+      - memcached
+      - postgres-memc
+    environment:
+      - MEMCACHED_HOST=memcached
+      - MEMCACHED_PORT=11211
+      - POSTGRES_HOST=postgres-memc
+      - POSTGRES_PORT=5432
+    restart: unless-stopped
 
 volumes:
-  pg_data:
+  pg_memc_data:
